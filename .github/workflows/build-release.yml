@@ -19,16 +19,14 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libssl-dev zlib1g-dev
+          sudo apt-get install -y build-essential libssl-dev zlib1g-dev python3 python3-dev
 
       - name: Download musl cross toolchain (landley mirror)
         run: |
-          # musl.cc 已屏蔽 GitHub Actions IP，改用 landley.net 镜像
           curl -L --retry 3 --retry-delay 5 \
             -o mipsel-toolchain.tar.xz \
             "https://landley.net/toybox/downloads/binaries/toolchains/latest/mipsel-linux-musl-cross.tar.xz"
           
-          # 校验是否下载成功
           if [ ! -s mipsel-toolchain.tar.xz ]; then
             echo "Download failed, trying fallback URL..."
             curl -L --retry 3 \
@@ -52,6 +50,7 @@ jobs:
             --host=mipsel-linux-musl \
             --build=x86_64-linux-gnu \
             --prefix=/tmp/python-mipsel \
+            --with-build-python=/usr/bin/python3 \
             --disable-ipv6 \
             --without-ensurepip \
             --disable-test-modules \
