@@ -1,0 +1,108 @@
+name: Build Python3 for 极路由 (mipsel musl)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CPython
+        uses: actions/checkout@v4
+        with:
+          repository: python/cpython
+          ref: v3.11.7
+          path: cpython
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev zlib1g-dev
+
+      - name: Download musl cross toolchain
+        run: |
+          wget -q https://musl.cc/mipsel-linux-musl-cross.tgz
+          tar xzf mipsel-linux-musl-cross.tgz
+          echo "$PWD/mipsel-linux-musl-cross/bin" >> $GITHUB_PATH
+
+      - name: Configure cross compile
+        run: |
+          cd cpython
+          export CC=mipsel-linux-musl-gcc
+          export CXX=mipsel-linux-musl-g++
+          export AR=mipsel-linux-musl-ar
+          export RANLIB=mipsel-linux-musl-ranlib
+          export CFLAGS="-Os -static"
+          export LDFLAGS="-static"
+          ./configure \
+            --host=mipsel-linux-musl \
+            --build=x86_64-linux-gnu \
+            --prefix=/tmp/python-mipsel \
+            --disable-ipv6 \
+            --without-ensurepip \
+            --disable-test-modules \
+            --enable-optimizations=no \
+            ac_cv_file__dev_ptmx=no \
+            ac_cv_file__dev_ptc=no \
+            ac_cv_func_setpgrp_void=yes
+
+      - name: Build
+        run: |
+          cd cpython
+          make -j$(nproc)
+
+      - name: Install & Strip
+        run: |
+          cd cpython
+          make install
+          # 裁剪体积，嵌入式设备存储就是命
+          mipsel-linux-musl-strip /tmp/python-mipsel/bin/python3
+          rm -rf /tmp/python-mipsel/lib/python3.11/test
+          rm -rf /tmp/python-mipsel/lib/python3.11/lib2to3/tests
+          rm -rf /tmp/python-mipsel/lib/python3.11/idlelib
+          rm -rf /tmp/python-mipsel/lib/python3.11/tkinter
+          rm -rf /tmp/python-mipsel/lib/python3.11/turtledemo
+          rm -rf /tmp/python-mipsel/lib/python3.11/ensurepip
+          rm -rf /tmp/python-mipsel/include
+          rm -f /tmp/python-mipsel/lib/python3.11/config-3.11/libpython3.11.a
+
+      - name: Package
+        run: |
+          cd /tmp/python-mipsel
+          tar czf $GITHUB_WORKSPACE/python-mipsel-musl.tar.gz .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-mipsel-musl
+          path: python-mipsel-musl.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: python-mipsel-musl
+          path: artifacts
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Create or Update Dev Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="dev-latest"
+          echo "Using fixed version tag: $VERSION"
+          gh release delete "$VERSION" --yes 2>/dev/null || true
+          gh release create "$VERSION" \
+            --title "Development Build (Latest)" \
+            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl (极路由 - 静态编译)" \
+            --prerelease \
+            artifacts/python-mipsel-musl.tar.gz
