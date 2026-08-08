@@ -24,7 +24,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libssl-dev zlib1g-dev
+          sudo apt-get install -y build-essential libssl-dev zlib1g-dev perl
 
       - name: Download musl cross toolchain (landley mirror)
         run: |
@@ -42,6 +42,35 @@ jobs:
           tar xf mipsel-toolchain.tar.xz
           echo "$PWD/mipsel-linux-musl-cross/bin" >> $GITHUB_PATH
 
+      - name: Cross-compile OpenSSL (static, no shared libs)
+        run: |
+          cd /tmp
+          curl -L --retry 3 -o openssl.tar.gz \
+            "https://www.openssl.org/source/openssl-3.0.13.tar.gz"
+          tar xzf openssl.tar.gz
+          cd openssl-3.0.13
+          
+          # 交叉编译 OpenSSL 为静态库，裁剪掉不需要的功能以减小体积
+          ./Configure linux-mips32 \
+            --prefix=/tmp/openssl-mipsel \
+            --cross-compile-prefix=mipsel-linux-musl- \
+            no-shared no-module no-legacy no-tests no-comp no-zlib no-ssl3 \
+            no-apps no-docs \
+            -static -Os
+          
+          make -j$(nproc)
+          make install_sw
+
+      - name: Force _ssl & _hashlib as built-in modules
+        run: |
+          # Setup.local 被追加到 Modules/Setup 末尾。
+          # *static* 表示后续模块编译进主程序（built-in），而非 .so 扩展
+          cat > cpython/Modules/Setup.local << 'EOF'
+          *static*
+          _ssl _ssl.c -I/tmp/openssl-mipsel/include -L/tmp/openssl-mipsel/lib -lssl -lcrypto
+          _hashlib _hashopenssl.c -I/tmp/openssl-mipsel/include -L/tmp/openssl-mipsel/lib -lssl -lcrypto
+          EOF
+
       - name: Configure cross compile
         run: |
           cd cpython
@@ -49,13 +78,16 @@ jobs:
           export CXX=mipsel-linux-musl-g++
           export AR=mipsel-linux-musl-ar
           export RANLIB=mipsel-linux-musl-ranlib
-          export CFLAGS="-Os -static"
-          export LDFLAGS="-static"
+          export CFLAGS="-Os"
+          export CPPFLAGS="-I/tmp/openssl-mipsel/include"
+          export LDFLAGS="-L/tmp/openssl-mipsel/lib"
+          export LIBS="-lssl -lcrypto"
           ./configure \
             --host=mipsel-linux-musl \
             --build=x86_64-linux-gnu \
             --prefix=/tmp/python-mipsel \
             --with-build-python=$(which python3) \
+            --with-openssl=/tmp/openssl-mipsel \
             --disable-ipv6 \
             --without-ensurepip \
             --disable-test-modules \
@@ -85,7 +117,7 @@ jobs:
           rm -rf /tmp/python-mipsel/include
           rm -f /tmp/python-mipsel/lib/python3.11/config-3.11/libpython3.11.a
 
-          # 修复：交叉编译时 make install 会生成文本 wrapper 脚本而不是符号链接
+          # 修复符号链接
           cd /tmp/python-mipsel/bin
           chmod +x python3.11
           rm -f python3 && ln -s python3.11 python3
@@ -101,7 +133,6 @@ jobs:
           
           mkdir -p "$SITE_PACKAGES"
           
-          # 从 CPython 自带 bundled wheels 安装 pip + setuptools
           for whl in "$BUNDLED_DIR"/*.whl; do
             if [ -f "$whl" ]; then
               echo "Installing $(basename "$whl") ..."
@@ -109,7 +140,6 @@ jobs:
             fi
           done
           
-          # 创建 pip 启动脚本
           cat > "$BIN_DIR/pip3.11" << 'SCRIPT'
           #!/usr/bin/env python3.11
           # -*- coding: utf-8 -*-
@@ -128,8 +158,6 @@ jobs:
         run: |
           TARGET_SITE="/tmp/python-mipsel/lib/python3.11/site-packages"
           
-          # 用宿主机 pip 把纯 Python 包装到目标 site-packages
-          # 这些包与架构无关，直接解压即可在 mipsel 上运行
           pip install \
             --no-cache-dir \
             --target "$TARGET_SITE" \
@@ -193,6 +221,6 @@ jobs:
           gh release delete "$VERSION" --yes 2>/dev/null || true
           gh release create "$VERSION" \
             --title "Development Build (Latest)" \
-            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl (极路由 - 静态编译)%0A- 包含 pip / setuptools / requests / beautifulsoup4 等常用纯 Python 包" \
+            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl (极路由)%0A- 内置 OpenSSL / SSL 支持%0A- 包含 pip / requests / beautifulsoup4 等" \
             --prerelease \
             artifacts/python-mipsel-musl.tar.gz
