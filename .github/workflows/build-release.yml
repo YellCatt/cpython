@@ -24,7 +24,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libssl-dev zlib1g-dev perl
+          sudo apt-get install -y build-essential libssl-dev zlib1g-dev
 
       - name: Download musl cross toolchain (landley mirror)
         run: |
@@ -42,45 +42,6 @@ jobs:
           tar xf mipsel-toolchain.tar.xz
           echo "$PWD/mipsel-linux-musl-cross/bin" >> $GITHUB_PATH
 
-      - name: Cross-compile OpenSSL (static)
-        run: |
-          cd /tmp
-          curl -L --retry 3 -o openssl.tar.gz \
-            "https://www.openssl.org/source/openssl-3.0.13.tar.gz"
-          tar xzf openssl.tar.gz
-          cd openssl-3.0.13
-          
-          export CC=mipsel-linux-musl-gcc
-          export CXX=mipsel-linux-musl-g++
-          export AR=mipsel-linux-musl-ar
-          export RANLIB=mipsel-linux-musl-ranlib
-          
-          ./Configure linux-mips32 \
-            --prefix=/tmp/openssl-mipsel \
-            threads \
-            no-asm \
-            no-shared no-module no-legacy no-tests no-comp no-zlib no-ssl3 \
-            -static -Os
-          
-          make -j$(nproc)
-          make install_sw
-          
-          CONF_H="/tmp/openssl-mipsel/include/openssl/opensslconf.h"
-          if ! grep -q "OPENSSL_THREADS" "$CONF_H" 2>/dev/null; then
-            echo "Injecting OPENSSL_THREADS into opensslconf.h..."
-            echo "#define OPENSSL_THREADS" >> "$CONF_H"
-          fi
-          echo "=== opensslconf.h OPENSSL_THREADS check ==="
-          grep "OPENSSL_THREADS" "$CONF_H" || true
-
-      - name: Force _ssl & _hashlib as built-in modules
-        run: |
-          cat > cpython/Modules/Setup.local << 'EOF'
-          *static*
-          _ssl _ssl.c -I/tmp/openssl-mipsel/include -L/tmp/openssl-mipsel/lib -lssl -lcrypto
-          _hashlib _hashopenssl.c -I/tmp/openssl-mipsel/include -L/tmp/openssl-mipsel/lib -lssl -lcrypto
-          EOF
-
       - name: Configure cross compile
         run: |
           cd cpython
@@ -88,17 +49,13 @@ jobs:
           export CXX=mipsel-linux-musl-g++
           export AR=mipsel-linux-musl-ar
           export RANLIB=mipsel-linux-musl-ranlib
-          # 关键修改：加 -static，让 python3.11 完全静态链接（不依赖 ld-musl）
           export CFLAGS="-Os -static"
-          export CPPFLAGS="-I/tmp/openssl-mipsel/include"
-          export LDFLAGS="-static -L/tmp/openssl-mipsel/lib"
-          export LIBS="-lssl -lcrypto"
+          export LDFLAGS="-static"
           ./configure \
             --host=mipsel-linux-musl \
             --build=x86_64-linux-gnu \
             --prefix=/tmp/python-mipsel \
             --with-build-python=$(which python3) \
-            --with-openssl=/tmp/openssl-mipsel \
             --disable-ipv6 \
             --without-ensurepip \
             --disable-test-modules \
@@ -112,13 +69,11 @@ jobs:
           cd cpython
           make -j$(nproc)
 
-      - name: Install & Strip & Fix Symlinks
+      - name: Install & Strip
         run: |
           cd cpython
           make install
-          mipsel-linux-musl-strip /tmp/python-mipsel/bin/python3.11
-
-          # 清理不需要的文件
+          mipsel-linux-musl-strip /tmp/python-mipsel/bin/python3
           rm -rf /tmp/python-mipsel/lib/python3.11/test
           rm -rf /tmp/python-mipsel/lib/python3.11/lib2to3/tests
           rm -rf /tmp/python-mipsel/lib/python3.11/idlelib
@@ -127,84 +82,6 @@ jobs:
           rm -rf /tmp/python-mipsel/lib/python3.11/ensurepip
           rm -rf /tmp/python-mipsel/include
           rm -f /tmp/python-mipsel/lib/python3.11/config-3.11/libpython3.11.a
-
-          # 修复符号链接
-          cd /tmp/python-mipsel/bin
-          chmod +x python3.11
-          rm -f python3 && ln -s python3.11 python3
-          rm -f 2to3 && ln -s 2to3-3.11 2to3
-          rm -f idle3 && ln -s idle3.11 idle3
-          rm -f pydoc3 && ln -s pydoc3.11 pydoc3
-
-      - name: Verify static link
-        run: |
-          echo "=== Checking if python3.11 is statically linked ==="
-          file /tmp/python-mipsel/bin/python3.11
-          readelf -l /tmp/python-mipsel/bin/python3.11 | grep -i "interpreter" || true
-          # 静态链接的文件不应该有 interpreter 段
-          if readelf -l /tmp/python-mipsel/bin/python3.11 | grep -q "interpreter"; then
-            echo "WARNING: python3.11 is NOT fully static!"
-          else
-            echo "OK: python3.11 appears to be statically linked."
-          fi
-
-      - name: Install pip for target
-        run: |
-          SITE_PACKAGES="/tmp/python-mipsel/lib/python3.11/site-packages"
-          BIN_DIR="/tmp/python-mipsel/bin"
-          BUNDLED_DIR="$GITHUB_WORKSPACE/cpython/Lib/ensurepip/_bundled"
-          
-          mkdir -p "$SITE_PACKAGES"
-          
-          for whl in "$BUNDLED_DIR"/*.whl; do
-            if [ -f "$whl" ]; then
-              echo "Installing $(basename "$whl") ..."
-              python3 -m zipfile -e "$whl" "$SITE_PACKAGES"
-            fi
-          done
-          
-          cat > "$BIN_DIR/pip3.11" << 'SCRIPT'
-          #!/usr/bin/env python3.11
-          # -*- coding: utf-8 -*-
-          import re
-          import sys
-          from pip._internal.cli.main import main
-          if __name__ == '__main__':
-              sys.argv[0] = re.sub(r'(-script\.pyw|\.exe)?$', '', sys.argv[0])
-              sys.exit(main())
-          SCRIPT
-          chmod +x "$BIN_DIR/pip3.11"
-          ln -sf pip3.11 "$BIN_DIR/pip3"
-          ln -sf pip3.11 "$BIN_DIR/pip"
-
-      - name: Pre-install common pure-Python packages
-        run: |
-          TARGET_SITE="/tmp/python-mipsel/lib/python3.11/site-packages"
-          
-          pip install \
-            --no-cache-dir \
-            --target "$TARGET_SITE" \
-            requests \
-            urllib3 \
-            certifi \
-            idna \
-            charset-normalizer \
-            beautifulsoup4 \
-            soupsieve \
-            pytz \
-            python-dateutil \
-            six
-          
-          echo "=== Checking for x86_64 .so files ==="
-          if find "$TARGET_SITE" -name "*.so" -o -name "*.so.*" | grep -q .; then
-            echo "WARNING: Found native .so files! These will NOT run on mipsel:"
-            find "$TARGET_SITE" -name "*.so" -o -name "*.so.*"
-          else
-            echo "OK: No native .so files found."
-          fi
-          
-          echo "=== Installed packages ==="
-          ls -la "$TARGET_SITE"
 
       - name: Package
         run: |
@@ -243,6 +120,6 @@ jobs:
           gh release delete "$VERSION" --yes 2>/dev/null || true
           gh release create "$VERSION" \
             --title "Development Build (Latest)" \
-            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl (极路由 - 完全静态编译)%0A- 内置 OpenSSL / 完整 SSL 支持%0A- 包含 pip / requests / beautifulsoup4 等" \
+            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl (极路由 - 静态编译)" \
             --prerelease \
             artifacts/python-mipsel-musl.tar.gz
