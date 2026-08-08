@@ -85,8 +85,7 @@ jobs:
           rm -rf /tmp/python-mipsel/include
           rm -f /tmp/python-mipsel/lib/python3.11/config-3.11/libpython3.11.a
 
-          # 修复：交叉编译时 make install 会生成文本 wrapper 脚本而不是符号链接，
-          # 导致在目标设备上因 PATH 不包含安装目录而找不到 python3.11。
+          # 修复：交叉编译时 make install 会生成文本 wrapper 脚本而不是符号链接
           cd /tmp/python-mipsel/bin
           chmod +x python3.11
           rm -f python3 && ln -s python3.11 python3
@@ -102,16 +101,15 @@ jobs:
           
           mkdir -p "$SITE_PACKAGES"
           
-          # 从 CPython 源码自带的 ensurepip bundled wheels 中安装 pip 和 setuptools
-          # pip 是纯 Python 包，与架构无关，直接用宿主机 Python 解压即可
+          # 从 CPython 自带 bundled wheels 安装 pip + setuptools
           for whl in "$BUNDLED_DIR"/*.whl; do
             if [ -f "$whl" ]; then
-              echo "Installing $(basename "$whl") to target site-packages..."
+              echo "Installing $(basename "$whl") ..."
               python3 -m zipfile -e "$whl" "$SITE_PACKAGES"
             fi
           done
           
-          # 创建 pip 启动脚本（使用 env shebang，适应不同安装路径）
+          # 创建 pip 启动脚本
           cat > "$BIN_DIR/pip3.11" << 'SCRIPT'
           #!/usr/bin/env python3.11
           # -*- coding: utf-8 -*-
@@ -125,25 +123,38 @@ jobs:
           chmod +x "$BIN_DIR/pip3.11"
           ln -sf pip3.11 "$BIN_DIR/pip3"
           ln -sf pip3.11 "$BIN_DIR/pip"
+
+      - name: Pre-install common pure-Python packages
+        run: |
+          TARGET_SITE="/tmp/python-mipsel/lib/python3.11/site-packages"
           
-          # 如果 bundled 中包含 setuptools，顺手创建 easy_install 脚本（兼容旧工具）
-          if [ -d "$SITE_PACKAGES/setuptools" ]; then
-            cat > "$BIN_DIR/easy_install-3.11" << 'SCRIPT'
-          #!/usr/bin/env python3.11
-          # -*- coding: utf-8 -*-
-          import re
-          import sys
-          from setuptools.command.easy_install import main
-          if __name__ == '__main__':
-              sys.argv[0] = re.sub(r'(-script\.pyw|\.exe)?$', '', sys.argv[0])
-              sys.exit(main())
-          SCRIPT
-            chmod +x "$BIN_DIR/easy_install-3.11"
-            ln -sf easy_install-3.11 "$BIN_DIR/easy_install"
+          # 用宿主机 pip 把纯 Python 包装到目标 site-packages
+          # 这些包与架构无关，直接解压即可在 mipsel 上运行
+          pip install \
+            --no-cache-dir \
+            --target "$TARGET_SITE" \
+            requests \
+            urllib3 \
+            certifi \
+            idna \
+            charset-normalizer \
+            beautifulsoup4 \
+            soupsieve \
+            pytz \
+            python-dateutil \
+            six
+          
+          # 安全检查：确保没有误装 x86_64 的 .so 文件
+          echo "=== Checking for x86_64 .so files ==="
+          if find "$TARGET_SITE" -name "*.so" -o -name "*.so.*" | grep -q .; then
+            echo "WARNING: Found native .so files! These will NOT run on mipsel:"
+            find "$TARGET_SITE" -name "*.so" -o -name "*.so.*"
+          else
+            echo "OK: No native .so files found."
           fi
           
-          echo "=== pip installed ==="
-          ls -la "$BIN_DIR"/pip*
+          echo "=== Installed packages ==="
+          ls -la "$TARGET_SITE"
 
       - name: Package
         run: |
@@ -182,6 +193,6 @@ jobs:
           gh release delete "$VERSION" --yes 2>/dev/null || true
           gh release create "$VERSION" \
             --title "Development Build (Latest)" \
-            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl (极路由 - 静态编译)%0A- 包含 pip / setuptools" \
+            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl (极路由 - 静态编译)%0A- 包含 pip / setuptools / requests / beautifulsoup4 等常用纯 Python 包" \
             --prerelease \
             artifacts/python-mipsel-musl.tar.gz
