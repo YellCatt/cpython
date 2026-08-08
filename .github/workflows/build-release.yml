@@ -1,4 +1,4 @@
-name: Build Python3 for 极路由 (mipsel musl soft-float)
+name: Build Python3 for 极路由 (mipsel musl soft-float via OpenWrt SDK)
 
 on:
   push:
@@ -21,26 +21,28 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install build dependencies
+      - name: Install host dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential libssl-dev zlib1g-dev perl \
-            gawk bison flex texinfo wget
+            tclsh pkg-config xz-utils wget
 
-      - name: Build musl-cross-make toolchain (mipsel soft-float)
+      - name: Install OpenWrt SDK for mt7620
         run: |
-          git clone --depth 1 https://github.com/richfelker/musl-cross-make.git
-          cd musl-cross-make
-          cat > config.mak << 'EOF'
-          TARGET = mipsel-linux-muslsf
-          OUTPUT = /tmp/mipsel-toolchain
-          GCC_CONFIG = --with-arch=mips32 --with-float=soft --disable-nls
-          BINUTILS_CONFIG = --disable-nls
-          COMMON_CONFIG = -static
-          EOF
-          make -j$(nproc)
-          make install
-          echo "/tmp/mipsel-toolchain/bin" >> $GITHUB_PATH
+          wget -q https://downloads.openwrt.org/releases/23.05.3/targets/ramips/mt7620/openwrt-sdk-23.05.3-ramips-mt7620_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+          mkdir -p openwrt-sdk
+          tar xf openwrt-sdk-*.tar.xz -C openwrt-sdk --strip-components=1
+          TOOLCHAIN_DIR=$(find openwrt-sdk/staging_dir -type d -name 'toolchain-*' | head -1)
+          TOOLCHAIN_DIR="$PWD/$TOOLCHAIN_DIR"
+          echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR" >> "$GITHUB_ENV"
+          echo "STAGING_DIR=$PWD/openwrt-sdk/staging_dir" >> "$GITHUB_ENV"
+          echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
+          echo "=== Toolchain dir ==="
+          echo "$TOOLCHAIN_DIR"
+          echo "=== Cross compiler ==="
+          ls "$TOOLCHAIN_DIR/bin" | grep 'mipsel' | head -10 || true
+          echo "=== Check float ABI ==="
+          "$TOOLCHAIN_DIR/bin/mipsel-openwrt-linux-musl-gcc" -dumpmachine || true
 
       - name: Cross-compile OpenSSL (static)
         run: |
@@ -50,11 +52,13 @@ jobs:
           tar xzf openssl.tar.gz
           cd openssl-3.0.13
           
-          export CC=mipsel-linux-muslsf-gcc
-          export CXX=mipsel-linux-muslsf-g++
-          export AR=mipsel-linux-muslsf-ar
-          export RANLIB=mipsel-linux-muslsf-ranlib
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export STAGING_DIR="$PWD/openwrt-sdk/staging_dir"
           
+          CC=mipsel-openwrt-linux-musl-gcc \
+          CXX=mipsel-openwrt-linux-musl-g++ \
+          AR=mipsel-openwrt-linux-musl-ar \
+          RANLIB=mipsel-openwrt-linux-musl-ranlib \
           ./Configure linux-mips32 \
             --prefix=/tmp/openssl-mipsel \
             threads \
@@ -84,17 +88,22 @@ jobs:
       - name: Configure cross compile
         run: |
           cd cpython
-          export CC=mipsel-linux-muslsf-gcc
-          export CXX=mipsel-linux-muslsf-g++
-          export AR=mipsel-linux-muslsf-ar
-          export RANLIB=mipsel-linux-muslsf-ranlib
-          # muslsf 工具链默认就是软浮点，不需要额外 -msoft-float
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export STAGING_DIR="$PWD/openwrt-sdk/staging_dir"
+          
+          export CC=mipsel-openwrt-linux-musl-gcc
+          export CXX=mipsel-openwrt-linux-musl-g++
+          export AR=mipsel-openwrt-linux-musl-ar
+          export RANLIB=mipsel-openwrt-linux-musl-ranlib
+          # OpenWrt SDK 默认就是软浮点，不需要 -msoft-float
+          # 保留 -march=mips32 确保指令集兼容 MT7620A
           export CFLAGS="-Os -static -march=mips32 -mtune=mips32"
           export CPPFLAGS="-I/tmp/openssl-mipsel/include"
           export LDFLAGS="-static -L/tmp/openssl-mipsel/lib"
           export LIBS="-lssl -lcrypto"
+          
           ./configure \
-            --host=mipsel-linux-muslsf \
+            --host=mipsel-openwrt-linux-musl \
             --build=x86_64-linux-gnu \
             --prefix=/tmp/python-mipsel \
             --with-build-python=$(which python3) \
@@ -116,7 +125,7 @@ jobs:
         run: |
           cd cpython
           make install
-          mipsel-linux-muslsf-strip /tmp/python-mipsel/bin/python3.11
+          mipsel-openwrt-linux-musl-strip /tmp/python-mipsel/bin/python3.11
 
           rm -rf /tmp/python-mipsel/lib/python3.11/test
           rm -rf /tmp/python-mipsel/lib/python3.11/lib2to3/tests
@@ -146,7 +155,7 @@ jobs:
           fi
           
           echo "=== Checking for hard-float instructions ==="
-          if mipsel-linux-muslsf-objdump -d /tmp/python-mipsel/bin/python3.11 | grep -Eq '\s(ldc1|sdc1|add\.s|mul\.s|c\.eq\.s|madd\.s)\s'; then
+          if mipsel-openwrt-linux-musl-objdump -d /tmp/python-mipsel/bin/python3.11 | grep -Eq '\s(ldc1|sdc1|add\.s|mul\.s|c\.eq\.s|madd\.s)\s'; then
             echo "WARNING: Found FPU instructions!"
           else
             echo "OK: No FPU instructions found (soft-float confirmed)."
@@ -247,6 +256,6 @@ jobs:
           gh release delete "$VERSION" --yes 2>/dev/null || true
           gh release create "$VERSION" \
             --title "Development Build (Latest)" \
-            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl soft-float (极路由 - 完全静态编译)%0A- 内置 OpenSSL / 完整 SSL 支持%0A- 软浮点 (无 FPU 设备兼容)%0A- 包含 pip / requests / beautifulsoup4 等" \
+            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl soft-float (极路由 - 完全静态编译)%0A- 使用 OpenWrt SDK (mt7620) 交叉编译%0A- 内置 OpenSSL / 完整 SSL 支持%0A- 软浮点 (无 FPU 设备兼容)%0A- 包含 pip / requests / beautifulsoup4 等" \
             --prerelease \
             artifacts/python-mipsel-musl-sf.tar.gz
