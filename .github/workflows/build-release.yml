@@ -42,7 +42,7 @@ jobs:
           tar xf mipsel-toolchain.tar.xz
           echo "$PWD/mipsel-linux-musl-cross/bin" >> $GITHUB_PATH
 
-      - name: Cross-compile OpenSSL (static, no shared libs)
+      - name: Cross-compile OpenSSL (static)
         run: |
           cd /tmp
           curl -L --retry 3 -o openssl.tar.gz \
@@ -50,12 +50,12 @@ jobs:
           tar xzf openssl.tar.gz
           cd openssl-3.0.13
           
-          # 交叉编译 OpenSSL 为静态库，裁剪掉不需要的功能以减小体积
-          ./Configure linux-mips32 \
+          # 交叉编译静态 OpenSSL
+          # 使用 linux-generic32 避免 mipsel 端序问题，去掉不支持的 no-apps/no-docs
+          ./Configure linux-generic32 \
             --prefix=/tmp/openssl-mipsel \
             --cross-compile-prefix=mipsel-linux-musl- \
             no-shared no-module no-legacy no-tests no-comp no-zlib no-ssl3 \
-            no-apps no-docs \
             -static -Os
           
           make -j$(nproc)
@@ -63,8 +63,6 @@ jobs:
 
       - name: Force _ssl & _hashlib as built-in modules
         run: |
-          # Setup.local 被追加到 Modules/Setup 末尾。
-          # *static* 表示后续模块编译进主程序（built-in），而非 .so 扩展
           cat > cpython/Modules/Setup.local << 'EOF'
           *static*
           _ssl _ssl.c -I/tmp/openssl-mipsel/include -L/tmp/openssl-mipsel/lib -lssl -lcrypto
@@ -172,7 +170,6 @@ jobs:
             python-dateutil \
             six
           
-          # 安全检查：确保没有误装 x86_64 的 .so 文件
           echo "=== Checking for x86_64 .so files ==="
           if find "$TARGET_SITE" -name "*.so" -o -name "*.so.*" | grep -q .; then
             echo "WARNING: Found native .so files! These will NOT run on mipsel:"
@@ -221,6 +218,6 @@ jobs:
           gh release delete "$VERSION" --yes 2>/dev/null || true
           gh release create "$VERSION" \
             --title "Development Build (Latest)" \
-            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl (极路由)%0A- 内置 OpenSSL / SSL 支持%0A- 包含 pip / requests / beautifulsoup4 等" \
+            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl (极路由)%0A- 内置 OpenSSL / 完整 SSL 支持%0A- 包含 pip / requests / beautifulsoup4 等" \
             --prerelease \
             artifacts/python-mipsel-musl.tar.gz
