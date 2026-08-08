@@ -76,7 +76,14 @@ jobs:
 
       - name: Force core C extensions as built-in (safe subset only)
         run: |
-          cat > cpython/Modules/Setup.local << 'EOF'
+          # 定位 OpenWrt SDK 的 target include / lib 路径，供 zlib / binascii 使用
+          TARGET_DIR=$(find "$STAGING_DIR" -maxdepth 1 -type d -name 'target-*' | head -1)
+          TARGET_INC="$TARGET_DIR/usr/include"
+          TARGET_LIB="$TARGET_DIR/usr/lib"
+          echo "TARGET_INC=$TARGET_INC" >> "$GITHUB_ENV"
+          echo "TARGET_LIB=$TARGET_LIB" >> "$GITHUB_ENV"
+          
+          cat > cpython/Modules/Setup.local << EOF
           *static*
 
           # SSL / Hash (need OpenSSL paths)
@@ -97,8 +104,8 @@ jobs:
           _bisect _bisectmodule.c
 
           # Encoding / Compression
-          binascii binascii.c
-          zlib zlibmodule.c
+          binascii binascii.c -I$TARGET_INC -L$TARGET_LIB
+          zlib zlibmodule.c -I$TARGET_INC -L$TARGET_LIB -lz
 
           # Hash family
           _md5 md5module.c
@@ -126,6 +133,10 @@ jobs:
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
           export STAGING_DIR="$GITHUB_WORKSPACE/openwrt-sdk/staging_dir"
           
+          # 把 OpenWrt SDK 的 target 头文件/库路径加入全局标志，确保 binascii/zlib 能找到 zlib.h
+          TARGET_INC="${TARGET_INC:-}"
+          TARGET_LIB="${TARGET_LIB:-}"
+          
           # CRITICAL: tells setup.py the real target platform so .so files
           # are installed to lib-dynload/ instead of a wrong arch directory
           export _PYTHON_HOST_PLATFORM=linux-mipsel
@@ -135,8 +146,8 @@ jobs:
           export AR=mipsel-openwrt-linux-musl-ar
           export RANLIB=mipsel-openwrt-linux-musl-ranlib
           export CFLAGS="-Os -static -march=mips32 -mtune=mips32"
-          export CPPFLAGS="-I/tmp/openssl-mipsel/include"
-          export LDFLAGS="-static -L/tmp/openssl-mipsel/lib"
+          export CPPFLAGS="-I/tmp/openssl-mipsel/include ${TARGET_INC:+-I$TARGET_INC}"
+          export LDFLAGS="-static -L/tmp/openssl-mipsel/lib ${TARGET_LIB:+-L$TARGET_LIB}"
           export LIBS="-lssl -lcrypto"
           
           ./configure \
