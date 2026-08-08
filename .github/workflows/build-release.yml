@@ -50,17 +50,31 @@ jobs:
           tar xzf openssl.tar.gz
           cd openssl-3.0.13
           
-          # linux-mips32 自带 OPENSSL_THREADS 线程支持
-          # no-asm 禁用 MIPS 汇编，避免 mipsel 小端端序兼容问题
+          # 用 CC 环境变量代替 --cross-compile-prefix，Configure 对线程检测更可靠
+          export CC=mipsel-linux-musl-gcc
+          export CXX=mipsel-linux-musl-g++
+          export AR=mipsel-linux-musl-ar
+          export RANLIB=mipsel-linux-musl-ranlib
+          
+          # 显式启用 threads；no-asm 禁用 MIPS 汇编避免 mipsel 小端问题
           ./Configure linux-mips32 \
             --prefix=/tmp/openssl-mipsel \
-            --cross-compile-prefix=mipsel-linux-musl- \
+            threads \
             no-asm \
             no-shared no-module no-legacy no-tests no-comp no-zlib no-ssl3 \
             -static -Os
           
           make -j$(nproc)
           make install_sw
+          
+          # 双重保险：强制确保 OPENSSL_THREADS 在头文件中定义
+          CONF_H="/tmp/openssl-mipsel/include/openssl/opensslconf.h"
+          if ! grep -q "OPENSSL_THREADS" "$CONF_H" 2>/dev/null; then
+            echo "Injecting OPENSSL_THREADS into opensslconf.h..."
+            echo "#define OPENSSL_THREADS" >> "$CONF_H"
+          fi
+          echo "=== opensslconf.h OPENSSL_THREADS check ==="
+          grep "OPENSSL_THREADS" "$CONF_H" || true
 
       - name: Force _ssl & _hashlib as built-in modules
         run: |
