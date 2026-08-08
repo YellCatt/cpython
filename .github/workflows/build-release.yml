@@ -50,11 +50,12 @@ jobs:
           tar xzf openssl.tar.gz
           cd openssl-3.0.13
           
-          # 交叉编译静态 OpenSSL
-          # 使用 linux-generic32 避免 mipsel 端序问题，去掉不支持的 no-apps/no-docs
-          ./Configure linux-generic32 \
+          # linux-mips32 自带 OPENSSL_THREADS 线程支持
+          # no-asm 禁用 MIPS 汇编，避免 mipsel 小端端序兼容问题
+          ./Configure linux-mips32 \
             --prefix=/tmp/openssl-mipsel \
             --cross-compile-prefix=mipsel-linux-musl- \
+            no-asm \
             no-shared no-module no-legacy no-tests no-comp no-zlib no-ssl3 \
             -static -Os
           
