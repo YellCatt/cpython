@@ -26,25 +26,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential libssl-dev zlib1g-dev perl
 
-      - name: Download musl cross toolchain (soft-float)
+      - name: Download musl cross toolchain (soft-float from musl.cc)
         run: |
-          # 关键修改：使用 muslsf（soft-float）工具链
+          # musl.cc 提供软浮点工具链，landley 没有 sf 版本
           curl -L --retry 3 --retry-delay 5 \
-            -o mipsel-toolchain.tar.xz \
-            "https://landley.net/toybox/downloads/binaries/toolchains/latest/mipsel-linux-muslsf-cross.tar.xz"
+            -o mipsel-toolchain.tgz \
+            "https://musl.cc/mipsel-linux-muslsf-cross.tgz"
           
-          if [ ! -s mipsel-toolchain.tar.xz ]; then
-            echo "Download failed, trying fallback URL..."
-            curl -L --retry 3 \
-              -o mipsel-toolchain.tar.xz \
-              "https://landley.net/bin/toolchains/latest/mipsel-linux-muslsf-cross.tar.xz"
-          fi
-          
-          tar xf mipsel-toolchain.tar.xz
-          # 关键修改：目录名也变了
+          tar xzf mipsel-toolchain.tgz
           echo "$PWD/mipsel-linux-muslsf-cross/bin" >> $GITHUB_PATH
 
-      - name: Cross-compile OpenSSL (static, soft-float)
+      - name: Cross-compile OpenSSL (static)
         run: |
           cd /tmp
           curl -L --retry 3 -o openssl.tar.gz \
@@ -52,19 +44,17 @@ jobs:
           tar xzf openssl.tar.gz
           cd openssl-3.0.13
           
-          export CC=mipsel-linux-musl-gcc
-          export CXX=mipsel-linux-musl-g++
-          export AR=mipsel-linux-musl-ar
-          export RANLIB=mipsel-linux-musl-ranlib
-          # 关键修改：强制软浮点 + 基础 MIPS32 指令集
-          export CFLAGS="-Os -static -msoft-float -march=mips32 -mtune=mips32"
-          export LDFLAGS="-static -msoft-float"
+          export CC=mipsel-linux-muslsf-gcc
+          export CXX=mipsel-linux-muslsf-g++
+          export AR=mipsel-linux-muslsf-ar
+          export RANLIB=mipsel-linux-muslsf-ranlib
           
           ./Configure linux-mips32 \
             --prefix=/tmp/openssl-mipsel \
             threads \
             no-asm \
-            no-shared no-module no-legacy no-tests no-comp no-zlib no-ssl3
+            no-shared no-module no-legacy no-tests no-comp no-zlib no-ssl3 \
+            -static -Os
           
           make -j$(nproc)
           make install_sw
@@ -88,17 +78,17 @@ jobs:
       - name: Configure cross compile
         run: |
           cd cpython
-          export CC=mipsel-linux-musl-gcc
-          export CXX=mipsel-linux-musl-g++
-          export AR=mipsel-linux-musl-ar
-          export RANLIB=mipsel-linux-musl-ranlib
-          # 关键修改：强制软浮点 + 基础 MIPS32 指令集
-          export CFLAGS="-Os -static -msoft-float -march=mips32 -mtune=mips32"
+          export CC=mipsel-linux-muslsf-gcc
+          export CXX=mipsel-linux-muslsf-g++
+          export AR=mipsel-linux-muslsf-ar
+          export RANLIB=mipsel-linux-muslsf-ranlib
+          # musl.cc 的 sf 工具链默认就是软浮点，不需要 -msoft-float
+          export CFLAGS="-Os -static -march=mips32 -mtune=mips32"
           export CPPFLAGS="-I/tmp/openssl-mipsel/include"
-          export LDFLAGS="-static -msoft-float -L/tmp/openssl-mipsel/lib"
+          export LDFLAGS="-static -L/tmp/openssl-mipsel/lib"
           export LIBS="-lssl -lcrypto"
           ./configure \
-            --host=mipsel-linux-musl \
+            --host=mipsel-linux-muslsf \
             --build=x86_64-linux-gnu \
             --prefix=/tmp/python-mipsel \
             --with-build-python=$(which python3) \
@@ -120,7 +110,7 @@ jobs:
         run: |
           cd cpython
           make install
-          mipsel-linux-musl-strip /tmp/python-mipsel/bin/python3.11
+          mipsel-linux-muslsf-strip /tmp/python-mipsel/bin/python3.11
 
           rm -rf /tmp/python-mipsel/lib/python3.11/test
           rm -rf /tmp/python-mipsel/lib/python3.11/lib2to3/tests
@@ -150,13 +140,10 @@ jobs:
           fi
           
           echo "=== Checking for hard-float instructions ==="
-          # 如果 objdump 里出现 ldc1/sdc1 等 FPU 指令，说明还是硬浮点
-          if command -v mipsel-linux-musl-objdump >/dev/null 2>&1; then
-            if mipsel-linux-musl-objdump -d /tmp/python-mipsel/bin/python3.11 | grep -Eq '\s(ldc1|sdc1|add\.s|mul\.s)\s'; then
-              echo "WARNING: Found FPU instructions! Still hard-float?"
-            else
-              echo "OK: No FPU instructions found (soft-float confirmed)."
-            fi
+          if mipsel-linux-muslsf-objdump -d /tmp/python-mipsel/bin/python3.11 | grep -Eq '\s(ldc1|sdc1|add\.s|mul\.s|c\.eq\.s)\s'; then
+            echo "WARNING: Found FPU instructions!"
+          else
+            echo "OK: No FPU instructions found (soft-float)."
           fi
 
       - name: Install pip for target
