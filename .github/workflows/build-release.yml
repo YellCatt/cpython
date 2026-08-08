@@ -51,7 +51,6 @@ jobs:
           cd openssl-3.0.13
           
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
-          export STAGING_DIR="$PWD/openwrt-sdk/staging_dir"
           
           CC=mipsel-openwrt-linux-musl-gcc \
           CXX=mipsel-openwrt-linux-musl-g++ \
@@ -84,16 +83,15 @@ jobs:
           _ssl _ssl.c -I/tmp/openssl-mipsel/include -L/tmp/openssl-mipsel/lib -lssl -lcrypto
           _hashlib _hashopenssl.c -I/tmp/openssl-mipsel/include -L/tmp/openssl-mipsel/lib -lssl -lcrypto
 
-          # Math / Random / Date / Stats (zero external deps, never fail)
+          # Math / Random / Date (zero external deps, never fail)
           math mathmodule.c
           _random _randommodule.c
           _datetime _datetimemodule.c
-          _statistics _statisticsmodule.c
 
           # Data structures / Serialization
           _struct _struct.c
-          _json _jsonmodule.c
-          _pickle _picklemodule.c
+          _json _json.c
+          _pickle _pickle.c
           array arraymodule.c
           _heapq _heapqmodule.c
           _bisect _bisectmodule.c
@@ -126,7 +124,7 @@ jobs:
         run: |
           cd cpython
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
-          export STAGING_DIR="$PWD/openwrt-sdk/staging_dir"
+          export STAGING_DIR="$GITHUB_WORKSPACE/openwrt-sdk/staging_dir"
           
           # CRITICAL: tells setup.py the real target platform so .so files
           # are installed to lib-dynload/ instead of a wrong arch directory
@@ -232,7 +230,6 @@ jobs:
           build_so "spwd"            "$SRC/spwdmodule.c" || true    # may fail
           build_so "grp"             "$SRC/grpmodule.c"
           build_so "pwd"             "$SRC/pwdmodule.c"
-          build_so "_posixsubprocess" "$SRC/_posixsubprocess.c"
           
           echo "=== Final lib-dynload contents ==="
           ls -la "$LIB_DYNLOAD/" || true
