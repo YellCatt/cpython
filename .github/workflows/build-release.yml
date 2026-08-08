@@ -24,17 +24,23 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libssl-dev zlib1g-dev perl
+          sudo apt-get install -y build-essential libssl-dev zlib1g-dev perl \
+            gawk bison flex texinfo wget
 
-      - name: Download musl cross toolchain (soft-float from musl.cc)
+      - name: Build musl-cross-make toolchain (mipsel soft-float)
         run: |
-          # musl.cc 提供软浮点工具链，landley 没有 sf 版本
-          curl -L --retry 3 --retry-delay 5 \
-            -o mipsel-toolchain.tgz \
-            "https://musl.cc/mipsel-linux-muslsf-cross.tgz"
-          
-          tar xzf mipsel-toolchain.tgz
-          echo "$PWD/mipsel-linux-muslsf-cross/bin" >> $GITHUB_PATH
+          git clone --depth 1 https://github.com/richfelker/musl-cross-make.git
+          cd musl-cross-make
+          cat > config.mak << 'EOF'
+          TARGET = mipsel-linux-muslsf
+          OUTPUT = /tmp/mipsel-toolchain
+          GCC_CONFIG = --with-arch=mips32 --with-float=soft --disable-nls
+          BINUTILS_CONFIG = --disable-nls
+          COMMON_CONFIG = -static
+          EOF
+          make -j$(nproc)
+          make install
+          echo "/tmp/mipsel-toolchain/bin" >> $GITHUB_PATH
 
       - name: Cross-compile OpenSSL (static)
         run: |
@@ -82,7 +88,7 @@ jobs:
           export CXX=mipsel-linux-muslsf-g++
           export AR=mipsel-linux-muslsf-ar
           export RANLIB=mipsel-linux-muslsf-ranlib
-          # musl.cc 的 sf 工具链默认就是软浮点，不需要 -msoft-float
+          # muslsf 工具链默认就是软浮点，不需要额外 -msoft-float
           export CFLAGS="-Os -static -march=mips32 -mtune=mips32"
           export CPPFLAGS="-I/tmp/openssl-mipsel/include"
           export LDFLAGS="-static -L/tmp/openssl-mipsel/lib"
@@ -140,10 +146,10 @@ jobs:
           fi
           
           echo "=== Checking for hard-float instructions ==="
-          if mipsel-linux-muslsf-objdump -d /tmp/python-mipsel/bin/python3.11 | grep -Eq '\s(ldc1|sdc1|add\.s|mul\.s|c\.eq\.s)\s'; then
+          if mipsel-linux-muslsf-objdump -d /tmp/python-mipsel/bin/python3.11 | grep -Eq '\s(ldc1|sdc1|add\.s|mul\.s|c\.eq\.s|madd\.s)\s'; then
             echo "WARNING: Found FPU instructions!"
           else
-            echo "OK: No FPU instructions found (soft-float)."
+            echo "OK: No FPU instructions found (soft-float confirmed)."
           fi
 
       - name: Install pip for target
