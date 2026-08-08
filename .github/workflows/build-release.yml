@@ -210,6 +210,7 @@ jobs:
           LIB_DYNLOAD="/tmp/python-mipsel/lib/python3.11/lib-dynload"
           PY_INC="/tmp/python-mipsel/include/python3.11"
           SRC="$GITHUB_WORKSPACE/cpython/Modules"
+          CPY="$GITHUB_WORKSPACE/cpython"
           
           mkdir -p "$LIB_DYNLOAD"
           
@@ -227,7 +228,10 @@ jobs:
             
             echo "Building $name.so from $srcfile ..."
             mipsel-openwrt-linux-musl-gcc -shared -fPIC -Os \
-              -I"$PY_INC" -I"$GITHUB_WORKSPACE/cpython/Include" -I"$GITHUB_WORKSPACE/cpython" \
+              -I"$PY_INC" \
+              -I"$CPY/Include" \
+              -I"$CPY/Include/internal" \
+              -I"$CPY" \
               $extra \
               "$srcfile" \
               -o "$outfile"
