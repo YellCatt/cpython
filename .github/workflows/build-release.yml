@@ -48,7 +48,7 @@ jobs:
           export CC=mipsel-linux-musl-gcc
           export CXX=mipsel-linux-musl-g++
           export AR=mipsel-linux-musl-ar
-          export RANLIB=mipsel-linux-musl-ranlib
+          export RANLIB=mipsel-linux-muslib
           export CFLAGS="-Os -static"
           export LDFLAGS="-static"
           ./configure \
@@ -69,11 +69,13 @@ jobs:
           cd cpython
           make -j$(nproc)
 
-      - name: Install & Strip
+      - name: Install & Strip & Fix Symlinks
         run: |
           cd cpython
           make install
-          mipsel-linux-musl-strip /tmp/python-mipsel/bin/python3
+          mipsel-linux-musl-strip /tmp/python-mipsel/bin/python3.11
+
+          # 清理不需要的文件
           rm -rf /tmp/python-mipsel/lib/python3.11/test
           rm -rf /tmp/python-mipsel/lib/python3.11/lib2to3/tests
           rm -rf /tmp/python-mipsel/lib/python3.11/idlelib
@@ -83,9 +85,20 @@ jobs:
           rm -rf /tmp/python-mipsel/include
           rm -f /tmp/python-mipsel/lib/python3.11/config-3.11/libpython3.11.a
 
+          # 修复：交叉编译时 make install 会生成文本 wrapper 脚本而不是符号链接，
+          # 导致在目标设备上因 PATH 不包含安装目录而找不到 python3.11。
+          # 这里强制替换为符号链接。
+          cd /tmp/python-mipsel/bin
+          chmod +x python3.11
+          rm -f python3 && ln -s python3.11 python3
+          rm -f 2to3 && ln -s 2to3-3.11 2to3
+          rm -f idle3 && ln -s idle3.11 idle3
+          rm -f pydoc3 && ln -s pydoc3.11 pydoc3
+
       - name: Package
         run: |
           cd /tmp/python-mipsel
+          # 确保符号链接在 tar 中正确打包
           tar czf $GITHUB_WORKSPACE/python-mipsel-musl.tar.gz .
 
       - name: Upload artifact
