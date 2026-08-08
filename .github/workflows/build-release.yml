@@ -41,8 +41,6 @@ jobs:
           echo "$TOOLCHAIN_DIR"
           echo "=== Cross compiler ==="
           ls "$TOOLCHAIN_DIR/bin" | grep 'mipsel' | head -10 || true
-          echo "=== Check float ABI ==="
-          "$TOOLCHAIN_DIR/bin/mipsel-openwrt-linux-musl-gcc" -dumpmachine || true
 
       - name: Cross-compile OpenSSL (static)
         run: |
@@ -83,6 +81,9 @@ jobs:
           *static*
           _ssl _ssl.c -I/tmp/openssl-mipsel/include -L/tmp/openssl-mipsel/lib -lssl -lcrypto
           _hashlib _hashopenssl.c -I/tmp/openssl-mipsel/include -L/tmp/openssl-mipsel/lib -lssl -lcrypto
+          math mathmodule.c
+          _random _randommodule.c
+          _datetime _datetimemodule.c
           EOF
 
       - name: Configure cross compile
@@ -91,12 +92,13 @@ jobs:
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
           export STAGING_DIR="$PWD/openwrt-sdk/staging_dir"
           
+          # 关键修复：告诉 setup.py 真实目标平台，避免扩展模块装错目录
+          export _PYTHON_HOST_PLATFORM=linux-mipsel
+          
           export CC=mipsel-openwrt-linux-musl-gcc
           export CXX=mipsel-openwrt-linux-musl-g++
           export AR=mipsel-openwrt-linux-musl-ar
           export RANLIB=mipsel-openwrt-linux-musl-ranlib
-          # OpenWrt SDK 默认就是软浮点，不需要 -msoft-float
-          # 保留 -march=mips32 确保指令集兼容 MT7620A
           export CFLAGS="-Os -static -march=mips32 -mtune=mips32"
           export CPPFLAGS="-I/tmp/openssl-mipsel/include"
           export LDFLAGS="-static -L/tmp/openssl-mipsel/lib"
@@ -121,6 +123,20 @@ jobs:
           cd cpython
           make -j$(nproc)
 
+      - name: Verify built-in modules
+        run: |
+          echo "=== lib-dynload contents ==="
+          find /tmp/python-mipsel/lib/python3.11/lib-dynload/ -name "*.so" | sort || true
+          
+          echo "=== Checking critical modules ==="
+          for mod in math _random _datetime _struct _json _pickle _socket select fcntl; do
+            if find /tmp/python-mipsel/lib/python3.11/lib-dynload/ -name "*${mod}*.so" | grep -q .; then
+              echo "OK: $mod"
+            else
+              echo "WARNING: $mod NOT FOUND in lib-dynload!"
+            fi
+          done
+
       - name: Install & Strip & Fix Symlinks
         run: |
           cd cpython
@@ -137,7 +153,7 @@ jobs:
           rm -f /tmp/python-mipsel/lib/python3.11/config-3.11/libpython3.11.a
 
           cd /tmp/python-mipsel/bin
-          chmod +x python3.11
+          chmod +x python3.11 2>/dev/null || true
           rm -f python3 && ln -s python3.11 python3
           rm -f 2to3 && ln -s 2to3-3.11 2to3
           rm -f idle3 && ln -s idle3.11 idle3
