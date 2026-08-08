@@ -45,10 +45,8 @@ jobs:
       - name: Cross-compile zlib (static)
         run: |
           cd /tmp
-          # 使用 GitHub Releases，更稳定
           curl -fsSL --retry 3 -o zlib-1.3.1.tar.gz \
             "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
-          # 校验文件大小，防止下载到 404 页面
           if [ $(stat -c%s zlib-1.3.1.tar.gz) -lt 100000 ]; then
             echo "ERROR: zlib download looks like an error page, trying mirror..."
             curl -fsSL --retry 3 -o zlib-1.3.1.tar.gz \
@@ -222,25 +220,24 @@ jobs:
           mkdir -p "$LIB_DYNLOAD"
           
           # Helper to build a .so if missing
+          # Usage: build_so <name> [extra_flags] <srcfile1> [srcfile2] ...
           build_so() {
             local name="$1"
-            local srcfile="$2"
-            local extra="$3"
             local outfile="$LIB_DYNLOAD/${name}.so"
+            shift
             
             if [ -f "$outfile" ]; then
               echo "OK: $name.so already exists"
               return 0
             fi
             
-            echo "Building $name.so from $srcfile ..."
+            echo "Building $name.so ..."
             mipsel-openwrt-linux-musl-gcc -shared -fPIC -Os \
               -I"$PY_INC" \
               -I"$CPY/Include" \
               -I"$CPY/Include/internal" \
               -I"$CPY" \
-              $extra \
-              "$srcfile" \
+              "$@" \
               -o "$outfile"
             
             if [ -f "$outfile" ]; then
@@ -256,7 +253,7 @@ jobs:
           build_so "fcntl"           "$SRC/fcntlmodule.c"
           build_so "select"          "$SRC/selectmodule.c"
           build_so "_socket"         "$SRC/socketmodule.c"
-          build_so "_multiprocessing" "$SRC/_multiprocessing/multiprocessing.c $SRC/_multiprocessing/semaphore.c"
+          build_so "_multiprocessing" "$SRC/_multiprocessing/multiprocessing.c" "$SRC/_multiprocessing/semaphore.c"
           build_so "_posixshmem"     "$SRC/_multiprocessing/posixshmem.c"
           build_so "syslog"          "$SRC/syslogmodule.c"
           build_so "termios"         "$SRC/termios.c"
