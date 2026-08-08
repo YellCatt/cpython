@@ -50,13 +50,11 @@ jobs:
           tar xzf openssl.tar.gz
           cd openssl-3.0.13
           
-          # 用 CC 环境变量代替 --cross-compile-prefix，Configure 对线程检测更可靠
           export CC=mipsel-linux-musl-gcc
           export CXX=mipsel-linux-musl-g++
           export AR=mipsel-linux-musl-ar
           export RANLIB=mipsel-linux-musl-ranlib
           
-          # 显式启用 threads；no-asm 禁用 MIPS 汇编避免 mipsel 小端问题
           ./Configure linux-mips32 \
             --prefix=/tmp/openssl-mipsel \
             threads \
@@ -67,7 +65,6 @@ jobs:
           make -j$(nproc)
           make install_sw
           
-          # 双重保险：强制确保 OPENSSL_THREADS 在头文件中定义
           CONF_H="/tmp/openssl-mipsel/include/openssl/opensslconf.h"
           if ! grep -q "OPENSSL_THREADS" "$CONF_H" 2>/dev/null; then
             echo "Injecting OPENSSL_THREADS into opensslconf.h..."
@@ -91,9 +88,10 @@ jobs:
           export CXX=mipsel-linux-musl-g++
           export AR=mipsel-linux-musl-ar
           export RANLIB=mipsel-linux-musl-ranlib
-          export CFLAGS="-Os"
+          # 关键修改：加 -static，让 python3.11 完全静态链接（不依赖 ld-musl）
+          export CFLAGS="-Os -static"
           export CPPFLAGS="-I/tmp/openssl-mipsel/include"
-          export LDFLAGS="-L/tmp/openssl-mipsel/lib"
+          export LDFLAGS="-static -L/tmp/openssl-mipsel/lib"
           export LIBS="-lssl -lcrypto"
           ./configure \
             --host=mipsel-linux-musl \
@@ -137,6 +135,18 @@ jobs:
           rm -f 2to3 && ln -s 2to3-3.11 2to3
           rm -f idle3 && ln -s idle3.11 idle3
           rm -f pydoc3 && ln -s pydoc3.11 pydoc3
+
+      - name: Verify static link
+        run: |
+          echo "=== Checking if python3.11 is statically linked ==="
+          file /tmp/python-mipsel/bin/python3.11
+          readelf -l /tmp/python-mipsel/bin/python3.11 | grep -i "interpreter" || true
+          # 静态链接的文件不应该有 interpreter 段
+          if readelf -l /tmp/python-mipsel/bin/python3.11 | grep -q "interpreter"; then
+            echo "WARNING: python3.11 is NOT fully static!"
+          else
+            echo "OK: python3.11 appears to be statically linked."
+          fi
 
       - name: Install pip for target
         run: |
@@ -233,6 +243,6 @@ jobs:
           gh release delete "$VERSION" --yes 2>/dev/null || true
           gh release create "$VERSION" \
             --title "Development Build (Latest)" \
-            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl (极路由)%0A- 内置 OpenSSL / 完整 SSL 支持%0A- 包含 pip / requests / beautifulsoup4 等" \
+            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl (极路由 - 完全静态编译)%0A- 内置 OpenSSL / 完整 SSL 支持%0A- 包含 pip / requests / beautifulsoup4 等" \
             --prerelease \
             artifacts/python-mipsel-musl.tar.gz
