@@ -1,4 +1,4 @@
-name: Build Python3 for 极路由 (mipsel musl soft-float via OpenWrt SDK)
+name: Build Python3 for 极路由 (mipsel musl soft-float, 全模块)
 
 on:
   push:
@@ -75,16 +75,52 @@ jobs:
           echo "=== opensslconf.h OPENSSL_THREADS check ==="
           grep "OPENSSL_THREADS" "$CONF_H" || true
 
-      - name: Force _ssl & _hashlib as built-in modules
+      - name: Force core C extensions as built-in (safe subset only)
         run: |
           cat > cpython/Modules/Setup.local << 'EOF'
           *static*
+
+          # SSL / Hash (need OpenSSL paths)
           _ssl _ssl.c -I/tmp/openssl-mipsel/include -L/tmp/openssl-mipsel/lib -lssl -lcrypto
           _hashlib _hashopenssl.c -I/tmp/openssl-mipsel/include -L/tmp/openssl-mipsel/lib -lssl -lcrypto
+
+          # Math / Random / Date / Stats (zero external deps, never fail)
           math mathmodule.c
           _random _randommodule.c
           _datetime _datetimemodule.c
+          _statistics _statisticsmodule.c
+
+          # Data structures / Serialization
+          _struct _struct.c
+          _json _jsonmodule.c
+          _pickle _picklemodule.c
+          array arraymodule.c
+          _heapq _heapqmodule.c
+          _bisect _bisectmodule.c
+
+          # Encoding / Compression
+          binascii binascii.c
+          zlib zlibmodule.c
+
+          # Hash family
+          _md5 md5module.c
+          _sha1 sha1module.c
+          _sha256 sha256module.c
+          _sha512 sha512module.c
+          _sha3 _sha3/sha3module.c
+          _blake2 _blake2/blake2module.c _blake2/blake2b_impl.c _blake2/blake2s_impl.c
+
+          # Others
+          _csv _csv.c
+          _contextvars _contextvarsmodule.c
+          _queue _queuemodule.c
+          _typing _typingmodule.c
+          _opcode _opcode.c
+          _asyncio _asynciomodule.c
+          _zoneinfo _zoneinfo.c
           EOF
+          # NOTE: _posixsubprocess, fcntl, select, _socket, _multiprocessing
+          # are left for setup.py to build as .so files to avoid static link failures.
 
       - name: Configure cross compile
         run: |
@@ -92,7 +128,8 @@ jobs:
           export PATH="$TOOLCHAIN_DIR/bin:$PATH"
           export STAGING_DIR="$PWD/openwrt-sdk/staging_dir"
           
-          # 关键修复：告诉 setup.py 真实目标平台，避免扩展模块装错目录
+          # CRITICAL: tells setup.py the real target platform so .so files
+          # are installed to lib-dynload/ instead of a wrong arch directory
           export _PYTHON_HOST_PLATFORM=linux-mipsel
           
           export CC=mipsel-openwrt-linux-musl-gcc
@@ -123,20 +160,6 @@ jobs:
           cd cpython
           make -j$(nproc)
 
-      - name: Verify built-in modules
-        run: |
-          echo "=== lib-dynload contents ==="
-          find /tmp/python-mipsel/lib/python3.11/lib-dynload/ -name "*.so" | sort || true
-          
-          echo "=== Checking critical modules ==="
-          for mod in math _random _datetime _struct _json _pickle _socket select fcntl; do
-            if find /tmp/python-mipsel/lib/python3.11/lib-dynload/ -name "*${mod}*.so" | grep -q .; then
-              echo "OK: $mod"
-            else
-              echo "WARNING: $mod NOT FOUND in lib-dynload!"
-            fi
-          done
-
       - name: Install & Strip & Fix Symlinks
         run: |
           cd cpython
@@ -158,6 +181,82 @@ jobs:
           rm -f 2to3 && ln -s 2to3-3.11 2to3
           rm -f idle3 && ln -s idle3.11 idle3
           rm -f pydoc3 && ln -s pydoc3.11 pydoc3
+
+      - name: Build missing extension modules manually (fallback)
+        run: |
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          LIB_DYNLOAD="/tmp/python-mipsel/lib/python3.11/lib-dynload"
+          PY_INC="/tmp/python-mipsel/include/python3.11"
+          SRC="$GITHUB_WORKSPACE/cpython/Modules"
+          
+          mkdir -p "$LIB_DYNLOAD"
+          
+          # Helper to build a .so if missing
+          build_so() {
+            local name="$1"
+            local srcfile="$2"
+            local extra="$3"
+            local outfile="$LIB_DYNLOAD/${name}.so"
+            
+            if [ -f "$outfile" ]; then
+              echo "OK: $name.so already exists"
+              return 0
+            fi
+            
+            echo "Building $name.so from $srcfile ..."
+            mipsel-openwrt-linux-musl-gcc -shared -fPIC -Os \
+              -I"$PY_INC" -I"$GITHUB_WORKSPACE/cpython/Include" -I"$GITHUB_WORKSPACE/cpython" \
+              $extra \
+              "$srcfile" \
+              -o "$outfile"
+            
+            if [ -f "$outfile" ]; then
+              echo "OK: $name.so built"
+            else
+              echo "ERROR: failed to build $name.so"
+              return 1
+            fi
+          }
+          
+          # Critical modules for pip / subprocess / networking
+          build_so "_posixsubprocess" "$SRC/_posixsubprocess.c"
+          build_so "fcntl"           "$SRC/fcntlmodule.c"
+          build_so "select"          "$SRC/selectmodule.c"
+          build_so "_socket"         "$SRC/socketmodule.c"
+          build_so "_multiprocessing" "$SRC/_multiprocessing/multiprocessing.c $SRC/_multiprocessing/semaphore.c"
+          build_so "_posixshmem"     "$SRC/_multiprocessing/posixshmem.c"
+          build_so "syslog"          "$SRC/syslogmodule.c"
+          build_so "termios"         "$SRC/termios.c"
+          build_so "resource"        "$SRC/resource.c"
+          build_so "_crypt"          "$SRC/_cryptmodule.c" || true  # may fail if no crypt.h
+          build_so "spwd"            "$SRC/spwdmodule.c" || true    # may fail
+          build_so "grp"             "$SRC/grpmodule.c"
+          build_so "pwd"             "$SRC/pwdmodule.c"
+          build_so "_posixsubprocess" "$SRC/_posixsubprocess.c"
+          
+          echo "=== Final lib-dynload contents ==="
+          ls -la "$LIB_DYNLOAD/" || true
+
+      - name: Verify critical modules
+        run: |
+          echo "=== Verify static-linked modules ==="
+          for sym in PyInit_math PyInit__random PyInit__datetime PyInit__json PyInit__struct PyInit_array PyInit_binascii PyInit_zlib PyInit__md5 PyInit__sha256 PyInit__sha512; do
+            if mipsel-openwrt-linux-musl-nm /tmp/python-mipsel/bin/python3.11 | grep -q "$sym"; then
+              echo "STATIC OK: $sym"
+            else
+              echo "STATIC WARN: $sym missing"
+            fi
+          done
+          
+          echo "=== Verify dynamic modules ==="
+          LIB_DYNLOAD="/tmp/python-mipsel/lib/python3.11/lib-dynload"
+          for mod in _posixsubprocess fcntl select _socket _multiprocessing grp pwd termios resource; do
+            if [ -f "$LIB_DYNLOAD/${mod}.so" ]; then
+              echo "DYNAMIC OK: ${mod}.so"
+            else
+              echo "DYNAMIC WARN: ${mod}.so missing"
+            fi
+          done
 
       - name: Verify static link & soft-float
         run: |
@@ -222,7 +321,9 @@ jobs:
             soupsieve \
             pytz \
             python-dateutil \
-            six
+            six \
+            elasticsearch \
+            elastic-transport
           
           echo "=== Checking for x86_64 .so files ==="
           if find "$TARGET_SITE" -name "*.so" -o -name "*.so.*" | grep -q .; then
@@ -272,6 +373,6 @@ jobs:
           gh release delete "$VERSION" --yes 2>/dev/null || true
           gh release create "$VERSION" \
             --title "Development Build (Latest)" \
-            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl soft-float (极路由 - 完全静态编译)%0A- 使用 OpenWrt SDK (mt7620) 交叉编译%0A- 内置 OpenSSL / 完整 SSL 支持%0A- 软浮点 (无 FPU 设备兼容)%0A- 包含 pip / requests / beautifulsoup4 等" \
+            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl soft-float (极路由 - 完全静态编译)%0A- 使用 OpenWrt SDK (mt7620) 交叉编译%0A- 内置 OpenSSL / 完整 SSL 支持%0A- 软浮点 (无 FPU 设备兼容)%0A- 核心C扩展静态链接 + 系统调用模块动态加载%0A- 包含 pip / requests / beautifulsoup4 / elasticsearch 等" \
             --prerelease \
             artifacts/python-mipsel-musl-sf.tar.gz
