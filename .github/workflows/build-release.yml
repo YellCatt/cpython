@@ -48,7 +48,7 @@ jobs:
           export CC=mipsel-linux-musl-gcc
           export CXX=mipsel-linux-musl-g++
           export AR=mipsel-linux-musl-ar
-          export RANLIB=mipsel-linux-muslib
+          export RANLIB=mipsel-linux-musl-ranlib
           export CFLAGS="-Os -static"
           export LDFLAGS="-static"
           ./configure \
@@ -87,7 +87,6 @@ jobs:
 
           # 修复：交叉编译时 make install 会生成文本 wrapper 脚本而不是符号链接，
           # 导致在目标设备上因 PATH 不包含安装目录而找不到 python3.11。
-          # 这里强制替换为符号链接。
           cd /tmp/python-mipsel/bin
           chmod +x python3.11
           rm -f python3 && ln -s python3.11 python3
@@ -95,10 +94,60 @@ jobs:
           rm -f idle3 && ln -s idle3.11 idle3
           rm -f pydoc3 && ln -s pydoc3.11 pydoc3
 
+      - name: Install pip for target
+        run: |
+          SITE_PACKAGES="/tmp/python-mipsel/lib/python3.11/site-packages"
+          BIN_DIR="/tmp/python-mipsel/bin"
+          BUNDLED_DIR="$GITHUB_WORKSPACE/cpython/Lib/ensurepip/_bundled"
+          
+          mkdir -p "$SITE_PACKAGES"
+          
+          # 从 CPython 源码自带的 ensurepip bundled wheels 中安装 pip 和 setuptools
+          # pip 是纯 Python 包，与架构无关，直接用宿主机 Python 解压即可
+          for whl in "$BUNDLED_DIR"/*.whl; do
+            if [ -f "$whl" ]; then
+              echo "Installing $(basename "$whl") to target site-packages..."
+              python3 -m zipfile -e "$whl" "$SITE_PACKAGES"
+            fi
+          done
+          
+          # 创建 pip 启动脚本（使用 env shebang，适应不同安装路径）
+          cat > "$BIN_DIR/pip3.11" << 'SCRIPT'
+          #!/usr/bin/env python3.11
+          # -*- coding: utf-8 -*-
+          import re
+          import sys
+          from pip._internal.cli.main import main
+          if __name__ == '__main__':
+              sys.argv[0] = re.sub(r'(-script\.pyw|\.exe)?$', '', sys.argv[0])
+              sys.exit(main())
+          SCRIPT
+          chmod +x "$BIN_DIR/pip3.11"
+          ln -sf pip3.11 "$BIN_DIR/pip3"
+          ln -sf pip3.11 "$BIN_DIR/pip"
+          
+          # 如果 bundled 中包含 setuptools，顺手创建 easy_install 脚本（兼容旧工具）
+          if [ -d "$SITE_PACKAGES/setuptools" ]; then
+            cat > "$BIN_DIR/easy_install-3.11" << 'SCRIPT'
+          #!/usr/bin/env python3.11
+          # -*- coding: utf-8 -*-
+          import re
+          import sys
+          from setuptools.command.easy_install import main
+          if __name__ == '__main__':
+              sys.argv[0] = re.sub(r'(-script\.pyw|\.exe)?$', '', sys.argv[0])
+              sys.exit(main())
+          SCRIPT
+            chmod +x "$BIN_DIR/easy_install-3.11"
+            ln -sf easy_install-3.11 "$BIN_DIR/easy_install"
+          fi
+          
+          echo "=== pip installed ==="
+          ls -la "$BIN_DIR"/pip*
+
       - name: Package
         run: |
           cd /tmp/python-mipsel
-          # 确保符号链接在 tar 中正确打包
           tar czf $GITHUB_WORKSPACE/python-mipsel-musl.tar.gz .
 
       - name: Upload artifact
@@ -133,6 +182,6 @@ jobs:
           gh release delete "$VERSION" --yes 2>/dev/null || true
           gh release create "$VERSION" \
             --title "Development Build (Latest)" \
-            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl (极路由 - 静态编译)" \
+            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux mipsel musl (极路由 - 静态编译)%0A- 包含 pip / setuptools" \
             --prerelease \
             artifacts/python-mipsel-musl.tar.gz
