@@ -129,6 +129,15 @@ jobs:
           binascii binascii.c -I/tmp/zlib-mipsel/include -L/tmp/zlib-mipsel/lib
           zlib zlibmodule.c -I/tmp/zlib-mipsel/include -L/tmp/zlib-mipsel/lib -lz
 
+          # Unicode / Codecs (CRITICAL for idna encoding used by urllib3/requests)
+          unicodedata unicodedata.c
+          _codecs_jp _codecs_jp.c
+          _codecs_kr _codecs_kr.c
+          _codecs_cn _codecs_cn.c
+          _codecs_tw _codecs_tw.c
+          _codecs_hk _codecs_hk.c
+          _codecs_iso2022 _codecs_iso2022.c
+
           # Hash family
           _md5 md5module.c
           _sha1 sha1module.c
@@ -213,7 +222,6 @@ jobs:
           rm -rf /tmp/python-mipsel/lib/python3.11/ensurepip
           rm -rf /tmp/python-mipsel/include
           rm -f /tmp/python-mipsel/lib/python3.11/config-3.11/libpython3.11.a
-          # lib-dynload 不再需要，全部静态链接了
           rm -rf /tmp/python-mipsel/lib/python3.11/lib-dynload
 
           cd /tmp/python-mipsel/bin
@@ -226,7 +234,7 @@ jobs:
       - name: Verify critical modules
         run: |
           echo "=== Verify static-linked modules ==="
-          for sym in PyInit__socket PyInit_select PyInit_fcntl PyInit__posixsubprocess PyInit_grp PyInit_pwd PyInit_termios PyInit_resource PyInit_syslog PyInit__multiprocessing PyInit_math PyInit__random PyInit__datetime PyInit__json PyInit__struct PyInit_array PyInit_binascii PyInit_zlib PyInit__md5 PyInit__sha256 PyInit__sha512; do
+          for sym in PyInit_unicodedata PyInit__socket PyInit_select PyInit_fcntl PyInit__posixsubprocess PyInit_grp PyInit_pwd PyInit_termios PyInit_resource PyInit_syslog PyInit__multiprocessing PyInit_math PyInit__random PyInit__datetime PyInit__json PyInit__struct PyInit_array PyInit_binascii PyInit_zlib PyInit__md5 PyInit__sha256 PyInit__sha512; do
             if mipsel-openwrt-linux-musl-nm /tmp/python-mipsel/bin/python3.11 | grep -q "$sym"; then
               echo "STATIC OK: $sym"
             else
