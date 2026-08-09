@@ -1,4 +1,4 @@
-name: Build Python3 for 极路由 (mipsel musl soft-float, 全模块)
+name: Build Python3 for 极路由 (mipsel musl soft-float, 全模块, 强制静态)
 
 on:
   push:
@@ -193,6 +193,7 @@ jobs:
             --without-ensurepip \
             --disable-test-modules \
             --enable-optimizations=no \
+            --disable-shared \
             ac_cv_file__dev_ptmx=no \
             ac_cv_file__dev_ptc=no \
             ac_cv_func_setpgrp_void=yes
@@ -208,6 +209,7 @@ jobs:
           make install
           mipsel-openwrt-linux-musl-strip /tmp/python-mipsel/bin/python3.11
 
+          # 清理纯 Python 库中的测试/无用文件
           rm -rf /tmp/python-mipsel/lib/python3.11/test
           rm -rf /tmp/python-mipsel/lib/python3.11/lib2to3/tests
           rm -rf /tmp/python-mipsel/lib/python3.11/idlelib
@@ -216,8 +218,19 @@ jobs:
           rm -rf /tmp/python-mipsel/lib/python3.11/ensurepip
           rm -rf /tmp/python-mipsel/include
           rm -f /tmp/python-mipsel/lib/python3.11/config-3.11/libpython3.11.a
-          rm -rf /tmp/python-mipsel/lib/python3.11/lib-dynload
+          
+          # 由于所有模块应已静态链接，lib-dynload 理论上为空或不存在
+          # 如果还有漏网的 .so，说明静态链接不彻底，删除并告警
+          if [ -d /tmp/python-mipsel/lib/python3.11/lib-dynload ]; then
+            SO_COUNT=$(find /tmp/python-mipsel/lib/python3.11/lib-dynload -name "*.so" | wc -l)
+            if [ "$SO_COUNT" -gt 0 ]; then
+              echo "WARNING: Found $SO_COUNT .so files in lib-dynload (should be empty for static build), removing..."
+              find /tmp/python-mipsel/lib/python3.11/lib-dynload -name "*.so" -delete
+            fi
+            rmdir /tmp/python-mipsel/lib/python3.11/lib-dynload 2>/dev/null || true
+          fi
 
+          # 修复 symlink
           cd /tmp/python-mipsel/bin
           chmod +x python3.11 2>/dev/null || true
           rm -f python3 && ln -s python3.11 python3
@@ -225,16 +238,32 @@ jobs:
           rm -f idle3 && ln -s idle3.11 idle3
           rm -f pydoc3 && ln -s pydoc3.11 pydoc3
 
-      - name: Verify critical modules
+      - name: Verify critical modules (STRICT - fail build if any missing)
         run: |
-          echo "=== Verify static-linked modules ==="
-          for sym in PyInit_unicodedata PyInit__socket PyInit_select PyInit_fcntl PyInit__posixsubprocess PyInit_grp PyInit_pwd PyInit_termios PyInit_resource PyInit_syslog PyInit__multiprocessing PyInit_math PyInit__random PyInit__datetime PyInit__json PyInit__struct PyInit_array PyInit_binascii PyInit_zlib PyInit__md5 PyInit__sha256 PyInit__sha512; do
-            if mipsel-openwrt-linux-musl-nm /tmp/python-mipsel/bin/python3.11 | grep -q "$sym"; then
+          echo "=== Strict verification: all listed modules MUST be statically linked ==="
+          MISSING=0
+          for sym in PyInit_unicodedata PyInit__socket PyInit_select PyInit_fcntl PyInit__posixsubprocess PyInit_grp PyInit_pwd PyInit_termios PyInit_resource PyInit_syslog PyInit__multiprocessing PyInit_math PyInit__random PyInit__datetime PyInit__json PyInit__struct PyInit_array PyInit_binascii PyInit_zlib PyInit__md5 PyInit__sha256 PyInit__sha512 PyInit__ssl PyInit__hashlib; do
+            if mipsel-openwrt-linux-musl-nm /tmp/python-mipsel/bin/python3.11 2>/dev/null | grep -q "$sym"; then
               echo "STATIC OK: $sym"
             else
-              echo "STATIC WARN: $sym missing"
+              echo "STATIC FAIL: $sym missing from python3.11 binary"
+              MISSING=1
             fi
           done
+          
+          if [ "$MISSING" -ne 0 ]; then
+            echo ""
+            echo "============================================================="
+            echo "ERROR: One or more critical C extensions are NOT statically linked."
+            echo "       This usually means they were built as .so files and would"
+            echo "       be lost when lib-dynload is removed."
+            echo "       Aborting build to prevent broken runtime."
+            echo "============================================================="
+            exit 1
+          fi
+          
+          echo ""
+          echo "=== All critical modules verified statically linked ==="
 
       - name: Verify static link & soft-float
         run: |
