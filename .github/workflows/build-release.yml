@@ -164,6 +164,9 @@ jobs:
           _opcode _opcode.c
           _asyncio _asynciomodule.c
           _zoneinfo _zoneinfo.c
+
+          # Memory mapping (CRITICAL: pip cachecontrol depends on this)
+          mmap mmapmodule.c
           EOF
 
       - name: Configure cross compile
@@ -196,7 +199,8 @@ jobs:
             --disable-shared \
             ac_cv_file__dev_ptmx=no \
             ac_cv_file__dev_ptc=no \
-            ac_cv_func_setpgrp_void=yes
+            ac_cv_func_setpgrp_void=yes \
+            ac_cv_func_mmap=yes
           
           # CRITICAL: Force regeneration of module registry. 
           # The old config.c from git checkout has a newer timestamp than 
@@ -223,7 +227,7 @@ jobs:
         run: |
           echo "=== Strict verification: all listed modules MUST be statically linked ==="
           MISSING=0
-          for sym in PyInit_unicodedata PyInit__socket PyInit_select PyInit_fcntl PyInit__posixsubprocess PyInit_grp PyInit_pwd PyInit_termios PyInit_resource PyInit_syslog PyInit__multiprocessing PyInit_math PyInit__random PyInit__datetime PyInit__json PyInit__struct PyInit_array PyInit_binascii PyInit_zlib PyInit__md5 PyInit__sha256 PyInit__sha512 PyInit__ssl PyInit__hashlib; do
+          for sym in PyInit_unicodedata PyInit__socket PyInit_select PyInit_fcntl PyInit__posixsubprocess PyInit_grp PyInit_pwd PyInit_termios PyInit_resource PyInit_syslog PyInit__multiprocessing PyInit_math PyInit__random PyInit__datetime PyInit__json PyInit__struct PyInit_array PyInit_binascii PyInit_zlib PyInit__md5 PyInit__sha256 PyInit__sha512 PyInit__ssl PyInit__hashlib PyInit_mmap; do
             if mipsel-openwrt-linux-musl-nm /tmp/python-mipsel/bin/python3.11 2>/dev/null | grep -q "$sym"; then
               echo "STATIC OK: $sym"
             else
@@ -274,6 +278,7 @@ jobs:
           # 修复 symlink
           cd /tmp/python-mipsel/bin
           chmod +x python3.11 2>/dev/null || true
+          ln -sf python3.11 python
           rm -f python3 && ln -s python3.11 python3
           rm -f 2to3 && ln -s 2to3-3.11 2to3
           rm -f idle3 && ln -s idle3.11 idle3
@@ -312,6 +317,7 @@ jobs:
             fi
           done
           
+          # Use shell wrapper instead of Python shebang to avoid busybox argv issues
           cat > "$BIN_DIR/pip3.11" << 'SCRIPT'
           #!/usr/bin/env python3.11
           # -*- coding: utf-8 -*-
